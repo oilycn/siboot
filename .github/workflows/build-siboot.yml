@@ -1,0 +1,60 @@
+name: Build siboot-aarch64
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'minis/src/**'
+      - 'minis/Cargo.toml'
+      - 'minis/Cargo.lock'
+      - '.github/workflows/build-siboot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: messense/rust-musl-cross:aarch64-musl
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          apt-get update && apt-get install -y cmake perl clang
+
+      - name: Build static siboot-aarch64
+        working-directory: minis
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static -C relocation-model=static"
+        run: |
+          cargo build --release --locked --target aarch64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/siboot bin/siboot-aarch64
+          chmod 755 bin/siboot-aarch64
+
+      - name: Update SHA256 and SIZE in minis/install.sh
+        working-directory: minis
+        run: |
+          NEW_SHA=$(sha256sum bin/siboot-aarch64 | awk '{print $1}')
+          NEW_SIZE=$(stat -c%s bin/siboot-aarch64)
+          sed -i "s/^SHA256=.*/SHA256=\"${NEW_SHA}\"/" install.sh
+          sed -i "s/^SIZE=.*/SIZE=${NEW_SIZE}/" install.sh
+          echo "Updated SHA256=${NEW_SHA} SIZE=${NEW_SIZE}"
+
+      - name: Commit updated binary and install.sh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add minis/bin/siboot-aarch64 minis/install.sh
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(build): rebuild siboot-aarch64 [skip ci]"
+            git push
+          else
+            echo "No changes to commit."
+          fi

@@ -23,7 +23,7 @@ pub struct Signed {
 
 pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Result<Signed> {
     ui::status("signing; this takes a while here");
-    let (app_dir, _special) = session
+    let first_try = session
         .sideloader
         .sign_app(
             ipa.to_path_buf(),
@@ -33,11 +33,38 @@ pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Res
             Some((device.name.as_str(), device.udid.as_str())),
             None,
         )
-        .await
-        .map_err(|e| {
+        .await;
+
+    let (app_dir, _special) = match first_try {
+        Ok(res) => res,
+        Err(e) => {
             let text = crate::error_text::report_text(&e);
-            Fail::new(sign_advice(&text), text)
-        })?;
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("app group")
+                || lower.contains("application group")
+                || lower.contains("error 35")
+            {
+                ui::warn("app group unavailable; retrying without app group");
+                session
+                    .sideloader
+                    .sign_app(
+                        ipa.to_path_buf(),
+                        None,
+                        MemoryLimit::Off,
+                        false,
+                        Some((device.name.as_str(), device.udid.as_str())),
+                        None,
+                    )
+                    .await
+                    .map_err(|e2| {
+                        let text2 = crate::error_text::report_text(&e2);
+                        Fail::new(sign_advice(&text2), text2)
+                    })?
+            } else {
+                return Err(Fail::new(sign_advice(&text), text));
+            }
+        }
+    };
     let (bundle_id, name, version) = bundle_info(&app_dir)?;
     ui::ok(&format!("signed {name} as {bundle_id}"));
     Ok(Signed {
