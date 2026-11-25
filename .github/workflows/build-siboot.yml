@@ -49,6 +49,8 @@ jobs:
 
       - name: Commit updated binary and install.sh
         run: |
+          cd "${GITHUB_WORKSPACE}"
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add minis/bin/siboot-aarch64 minis/install.sh
