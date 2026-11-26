@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'minis/src/**'
+      - 'minis/scripts/**'
       - 'minis/Cargo.toml'
       - 'minis/Cargo.lock'
       - '.github/workflows/build-siboot.yml'
@@ -27,7 +28,11 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get update && apt-get install -y cmake perl clang
+          apt-get update && apt-get install -y cmake perl clang python3
+
+      - name: Patch vendored isideload for case-insensitive App ID & App Group reuse
+        run: |
+          python3 minis/scripts/patch_isideload_case_insensitive.py
 
       - name: Build static siboot-aarch64
         working-directory: minis
