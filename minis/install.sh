@@ -19,10 +19,10 @@ set -eu
 # file through jsDelivr's CDNs, which can get through where GitHub's raw files
 # don't. Whichever answers, the copy has to match SHA256, so a mirror can't
 # change what runs. SIBOOT_BASE replaces the list (one URL, or several).
-SOURCES="https://raw.githubusercontent.com/FrizzleM/siboot/main/minis
-https://fastly.jsdelivr.net/gh/FrizzleM/siboot@main/minis
-https://gcore.jsdelivr.net/gh/FrizzleM/siboot@main/minis
-https://cdn.jsdelivr.net/gh/FrizzleM/siboot@main/minis"
+SOURCES="https://raw.githubusercontent.com/oilycn/siboot/main/minis
+https://fastly.jsdelivr.net/gh/oilycn/siboot@main/minis
+https://gcore.jsdelivr.net/gh/oilycn/siboot@main/minis
+https://cdn.jsdelivr.net/gh/oilycn/siboot@main/minis"
 SOURCES="${SIBOOT_BASE:-$SOURCES}"
 # Of bin/siboot-aarch64, updated with it: a download that doesn't match (an
 # error page, a cut-off transfer, a stale mirror) is never run. SIZE only

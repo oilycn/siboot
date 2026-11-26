@@ -200,6 +200,7 @@ pub enum Code {
 /// How the user chooses to supply a pairing file when none is saved yet.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PairingChoice {
+    FromMounts,
     PairHere,
     File { name: String, bytes: Vec<u8> },
     Cancel,
@@ -376,16 +377,19 @@ impl Server {
         }
     }
 
-    /// Ask whether to import an existing pairing file or pair this iPhone now.
+    /// Ask whether to load from Open Minis mounted folder, import from Files, or pair now.
     pub fn pairing_choice(&self, can_pair: bool) -> PairingChoice {
         loop {
             let answer = self.ask(json!({
                 "kind": "pairing_choice",
-                "question": "Use an existing pairing file, or pair this iPhone",
+                "question": "选择配对方式（可跳过配对）",
                 "can_pair": can_pair,
             }));
             if cancelled(&answer) {
                 return PairingChoice::Cancel;
+            }
+            if answer["mounts"] == json!(true) {
+                return PairingChoice::FromMounts;
             }
             if can_pair && answer["pair"] == json!(true) {
                 return PairingChoice::PairHere;

@@ -851,26 +851,28 @@ pub fn ask_pairing_choice(can_pair: bool) -> web::PairingChoice {
     if let Some(page) = web::page() {
         let choice = page.pairing_choice(can_pair);
         let label = match &choice {
-            web::PairingChoice::PairHere => "Pair this iPhone",
-            web::PairingChoice::File { .. } => "Import pairing file",
-            web::PairingChoice::Cancel => "Cancel",
+            web::PairingChoice::FromMounts => "从挂载文件夹获取",
+            web::PairingChoice::PairHere => "开始在线配对",
+            web::PairingChoice::File { .. } => "从文件导入配对文件",
+            web::PairingChoice::Cancel => "取消",
         };
-        record_answer("Pairing file", Some(label));
+        record_answer("配对方式", Some(label));
         return choice;
     }
     if !interactive() {
         return if can_pair { web::PairingChoice::PairHere } else { web::PairingChoice::Cancel };
     }
     let prompt = if can_pair {
-        "Path to existing pairing file (or press Enter to pair this iPhone): "
+        "输入配对文件路径，输入 m 扫描挂载目录 (/var/minis/mounts)，或直接回车开始在线配对: "
     } else {
-        "Path to existing pairing file (or Ctrl-C to stop): "
+        "输入配对文件路径，或输入 m 扫描挂载目录 (/var/minis/mounts): "
     };
     match ask(prompt) {
         None => web::PairingChoice::Cancel,
         Some(line) if line.trim().is_empty() => {
             if can_pair { web::PairingChoice::PairHere } else { web::PairingChoice::Cancel }
         }
+        Some(line) if line.trim().eq_ignore_ascii_case("m") => web::PairingChoice::FromMounts,
         Some(line) => {
             let trimmed = line.trim().trim_matches('"').trim_matches('\'');
             let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
@@ -890,7 +892,7 @@ pub fn ask_pairing_choice(can_pair: bool) -> web::PairingChoice {
                     web::PairingChoice::File { name, bytes }
                 }
                 Err(e) => {
-                    warn(&format!("Couldn't read {}: {e}", expanded.display()));
+                    warn(&format!("无法读取 {}: {e}", expanded.display()));
                     web::PairingChoice::Cancel
                 }
             }

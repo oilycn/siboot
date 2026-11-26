@@ -104,28 +104,39 @@ pub enum Source {
     Minis,
 }
 
-/// Candidate pairing files in mounted / local directories (Open Minis `/mnt/*`,
-/// `~`, `~/.siboot`, current working directory), skipping `already_tried`.
-fn mounted_pairing_candidates(args: &Args, already_tried: &Path) -> Vec<PathBuf> {
+/// Candidate pairing files in mounted / local directories (Open Minis `/var/minis/mounts/*`,
+/// `/mnt/*`, `~`, `~/.siboot`, current working directory), optionally skipping `already_tried`.
+fn mounted_pairing_candidates(args: &Args, already_tried: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
+    // 优先扫描 Open Minis 挂载目录（支持 /var/minis/mounts 及下两级子目录）
+    for root in ["/var/minis/mounts", "/mnt"] {
+        let root_path = PathBuf::from(root);
+        if root_path.is_dir() {
+            dirs.push(root_path.clone());
+            if let Ok(entries) = std::fs::read_dir(&root_path) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        dirs.push(p.clone());
+                        if let Ok(sub_entries) = std::fs::read_dir(&p) {
+                            for sub in sub_entries.flatten() {
+                                let sp = sub.path();
+                                if sp.is_dir() {
+                                    dirs.push(sp);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     dirs.push(args.home.clone());
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(PathBuf::from(home));
     }
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd);
-    }
-    let mnt = PathBuf::from("/mnt");
-    if mnt.is_dir() {
-        dirs.push(mnt.clone());
-        if let Ok(entries) = std::fs::read_dir(&mnt) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    dirs.push(p);
-                }
-            }
-        }
     }
 
     let preferred_names = [
@@ -136,7 +147,7 @@ fn mounted_pairing_candidates(args: &Args, already_tried: &Path) -> Vec<PathBuf>
         "pairingFile.plist",
     ];
     let mut out: Vec<PathBuf> = Vec::new();
-    let canonical_skip = std::fs::canonicalize(already_tried).ok();
+    let canonical_skip = already_tried.and_then(|p| std::fs::canonicalize(p).ok());
 
     let mut push_if_new = |p: PathBuf| {
         if !p.is_file() {
@@ -173,24 +184,44 @@ fn mounted_pairing_candidates(args: &Args, already_tried: &Path) -> Vec<PathBuf>
     out
 }
 
-async fn try_mounted_pairing(args: &Args, dest: &Path) -> Option<PathBuf> {
-    let candidates = mounted_pairing_candidates(args, dest);
-    for candidate in candidates {
-        if RpPairingFile::read_from_file(&candidate).await.is_err() {
+async fn try_mounted_pairing(args: &Args, dest: &Path, skip_dest: bool) -> std::result::Result<PathBuf, String> {
+    let candidates = mounted_pairing_candidates(args, if skip_dest { Some(dest) } else { None });
+    if candidates.is_empty() {
+        return Err("未在挂载目录 (/var/minis/mounts) 中找到配对文件 (.plist / .mobiledevicepairing)。请先在 Open Minis 中挂载包含配对文件的文件夹，再点击「从挂载文件夹获取」。".into());
+    }
+    let mut invalid_format = 0usize;
+    let mut refused_by_device = 0usize;
+    for candidate in &candidates {
+        if RpPairingFile::read_from_file(candidate).await.is_err() {
+            invalid_format += 1;
             continue;
         }
-        ui::activity(&format!("trying mounted pairing file {}", candidate.display()));
-        if tunnel::verify(args.device, &candidate).await.is_ok() {
+        ui::activity(&format!("正在验证挂载目录配对文件 {}", candidate.display()));
+        if tunnel::verify(args.device, candidate).await.is_ok() {
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if std::fs::copy(&candidate, dest).is_ok() {
-                ui::ok(&format!("this iPhone accepts mounted pairing file {}", candidate.display()));
-                return Some(candidate);
+            if std::fs::copy(candidate, dest).is_ok() {
+                ui::ok(&format!("已通过挂载配对文件验证：{}", candidate.display()));
+                return Ok(candidate.clone());
             }
+        } else {
+            refused_by_device += 1;
         }
     }
-    None
+    if refused_by_device > 0 {
+        Err(format!(
+            "在挂载目录扫描到 {} 个文件（其中 {} 个被本机拒绝），请确认该配对文件属于当前设备且未在系统设置中取消信任，或改用「开始在线配对」。",
+            candidates.len(),
+            refused_by_device
+        ))
+    } else {
+        Err(format!(
+            "在挂载目录扫描到 {} 个文件（{} 个格式不兼容）：当前文件不是 iOS 27 RemotePairing 配对文件（需 rp_pairing_file.plist / combined_pairing_file.plist，旧版仅含 lockdown 密钥的 .mobiledevicepairing 无法直接建立 iOS 27 隧道）。",
+            candidates.len(),
+            invalid_format
+        ))
+    }
 }
 
 async fn verify_and_save_imported(
@@ -203,82 +234,88 @@ async fn verify_and_save_imported(
         let _ = std::fs::create_dir_all(parent);
     }
     let tmp = args.home.join(".imported_pairing_tmp.plist");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("Couldn't save {name}: {e}"))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("无法写入临时文件 {name}: {e}"))?;
     let parse_res = RpPairingFile::read_from_file(&tmp).await;
     if let Err(e) = parse_res {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!(
-            "{name} is not a valid iOS 27 RemotePairing file (rp_pairing_file.plist / combined_pairing_file.plist): {}",
+            "{name} 不是有效的 iOS 27 RemotePairing 配对文件（需 rp_pairing_file.plist / combined_pairing_file.plist）：{}",
             chain(&e)
         ));
     }
-    ui::activity(&format!("checking {name} with this iPhone"));
+    ui::activity(&format!("正在与本机验证配对文件 {name}"));
     if let Err(f) = tunnel::verify(args.device, &tmp).await {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("This iPhone doesn't accept {name}: {}", f.advice));
+        return Err(format!("本机拒绝了配对文件 {name}：{}", f.advice));
     }
     std::fs::rename(&tmp, dest)
         .or_else(|_| std::fs::copy(&tmp, dest).map(|_| ()))
-        .map_err(|e| format!("Couldn't store {name} at {}: {e}", dest.display()))?;
+        .map_err(|e| format!("无法保存 {name} 到 {}: {e}", dest.display()))?;
     let _ = std::fs::remove_file(&tmp);
-    ui::ok(&format!("this iPhone accepts imported pairing file {name}"));
+    ui::ok(&format!("已通过导入配对文件验证：{name}"));
     Ok(())
 }
 
 pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
     let mut saved_refused = None;
     if path.exists() {
-        ui::activity("trying the pairing file saved on an earlier run");
+        ui::activity("正在验证已保存的配对文件");
         match tunnel::verify(args.device, path).await {
             Ok(()) => {
-                ui::ok("this iPhone accepts the pairing file saved on an earlier run");
+                ui::ok("已保存的配对文件有效，跳过配对");
                 return Ok(Source::Saved);
             }
             Err(f) => {
-                ui::note("This iPhone doesn't accept the saved pairing file, looking for another pairing file or pairing again.");
+                ui::note("当前已保存的配对文件未被本机接受，正在检查挂载目录或重新选择配对方式。");
                 ui::detail(&f.raw);
                 saved_refused = Some(f);
             }
         }
     }
 
-    // 自动探测已挂载或内置在目录中的配对文件，匹配成功直接跳过配对
-    if try_mounted_pairing(args, path).await.is_some() {
+    // 自动探测 /var/minis/mounts 等挂载目录中的有效配对文件，匹配成功直接跳过配对
+    if try_mounted_pairing(args, path, true).await.is_ok() {
         return Ok(Source::Imported);
     }
 
     let bridge = Bridge::from_env();
-    ui::activity("checking that Open Minis can pair this iPhone");
+    ui::activity("正在检查 Open Minis 是否支持在线配对");
     let here = can_pair_here(&bridge).await;
 
     let offer = SocketAddr::from(([127, 0, 0, 1], HANDOFF_PORT));
     let hint = if here.is_ok() {
-        "type the transfer code it shows, or Cancel to import a pairing file / pair here in Minis"
+        "输入 rootshell 显示的传输码，或点取消改为从挂载文件夹获取 / 在线配对"
     } else {
-        "type the transfer code it shows, or Cancel to import a pairing file"
+        "输入 rootshell 显示的传输码，或点取消改为从挂载文件夹获取"
     };
     let ask = || {
         ui::ask_code(
-            "rootshell is offering its file",
-            "Code",
+            "检测到 rootshell 正在共享配对文件",
+            "传输码",
             hint,
-            "Transfer code shown in rootshell: ",
+            "rootshell 显示的传输码: ",
         )
     };
     match take(offer, path, ask, ANSWER_WAIT).await? {
         Taken::File => {
-            ui::activity("checking it with this iPhone");
+            ui::activity("正在验证来自 rootshell 的配对文件");
             tunnel::verify(args.device, path).await?;
-            ui::ok("this iPhone accepts the pairing file from rootshell");
+            ui::ok("本机已接受来自 rootshell 的配对文件");
             return Ok(Source::Rootshell);
         }
         Taken::Cancelled | Taken::NotOffered => {}
     }
 
-    // 允许用户跳过配对，直接通过文件选择器或路径导入已有配对文件
+    // 允许用户跳过配对：从挂载文件夹获取、从文件导入，或开始在线配对
     if ui::interactive() {
         loop {
             match ui::ask_pairing_choice(here.is_ok()) {
+                crate::web::PairingChoice::FromMounts => {
+                    match try_mounted_pairing(args, path, false).await {
+                        Ok(_) => return Ok(Source::Imported),
+                        Err(msg) => ui::warn(&msg),
+                    }
+                }
                 crate::web::PairingChoice::File { name, bytes } => {
                     match verify_and_save_imported(args, path, &name, &bytes).await {
                         Ok(()) => return Ok(Source::Imported),
@@ -287,7 +324,7 @@ pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
                 }
                 crate::web::PairingChoice::PairHere => break,
                 crate::web::PairingChoice::Cancel => {
-                    return Err(Fail::by_user("Stopped before pairing."));
+                    return Err(Fail::by_user("已在配对前取消。"));
                 }
             }
         }
