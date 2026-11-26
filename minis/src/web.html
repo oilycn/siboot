@@ -202,6 +202,74 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
   const links = [];
   let source = null;
 
+  const isZh = /^zh/i.test((navigator.language || "").trim());
+  const ZH_EXACT = {
+    "Check": "环境检查",
+    "Pairing": "设备配对",
+    "Connect": "建立隧道",
+    "Apple ID": "Apple 账号",
+    "Sign": "应用签名",
+    "Install": "覆盖安装",
+    "Handover": "写入配对",
+    "Dev Mode": "开发者模式",
+    "Installs / Re-signs Gnoix on this iPhone.": "正在为本机安装 / 重签 Gnoix",
+    "Installs SideInstaller on this iPhone.": "正在为本机安装应用",
+    "Shows Developer Mode, or turns it on.": "开启或显示开发者模式",
+    "Checking the internet, LocalDevVPN and this iPhone": "正在检查网络、LocalDevVPN 与本机连接",
+    "Checking LocalDevVPN and this iPhone": "正在检查 LocalDevVPN 与本机连接",
+    "Pairing this iPhone with siboot": "正在检查或获取设备配对文件",
+    "Connecting to this iPhone through LocalDevVPN": "正在通过 LocalDevVPN 建立安全隧道",
+    "Signing in to your Apple Account": "正在登录 Apple 账号",
+    "Signing Gnoix for this iPhone": "正在为本机重签 Gnoix",
+    "Signing SideInstaller for this iPhone": "正在为本机签名应用",
+    "Installing it": "正在覆盖安装到本机",
+    "Handing Gnoix the pairing": "正在将配对文件写入 Gnoix",
+    "Handing SideInstaller the pairing": "正在写入配对文件",
+    "sign in to your Apple Account": "登录 Apple 账号（用于重签 Gnoix）",
+    "sign in with which Apple Account?": "选择要用于签名的 Apple 账号",
+    "Another Apple Account": "使用其他 Apple 账号",
+    "Forget an Apple Account": "移除已保存的账号",
+    "Email": "Apple ID 邮箱",
+    "Password": "密码",
+    "your Apple Account": "请输入 Apple ID 邮箱",
+    "it goes only to Apple": "仅发送至苹果官方，不会上传第三方",
+    "Start pairing": "开始配对",
+    "Continue": "继续",
+    "Open Gnoix": "打开 Gnoix",
+    "Open SideInstaller": "打开 SideInstaller",
+    "Gnoix is installed": "Gnoix 已安装 / 重签完成",
+    "SideInstaller is installed": "应用已安装完成",
+    "the saved pairing still works": "已保存的配对文件有效，已跳过配对",
+    "using mounted/imported pairing file": "已使用挂载/导入的配对文件，已跳过配对",
+    "Gnoix has the pairing": "配对文件已写入 Gnoix",
+    "SideInstaller has the pairing": "配对文件已写入",
+    "online, and the iPhone answers": "网络正常，本机已连通",
+    "the iPhone answers": "本机已连通",
+  };
+  const tr = (s) => {
+    if (!isZh || !s) return s;
+    const str = String(s);
+    if (ZH_EXACT[str]) return ZH_EXACT[str];
+    const lower = str.toLowerCase();
+    for (const [k, v] of Object.entries(ZH_EXACT)) {
+      if (k.toLowerCase() === lower) return v;
+    }
+    if (str.startsWith("Keep Minis open until siboot is done")) {
+      return "请保持 Open Minis 在前台运行，切到后台会被 iOS 暂停。";
+    }
+    if (str.startsWith("Open it from your Home Screen.")) {
+      return "请回到桌面打开应用；首次安装需前往「设置 → 通用 → VPN 与设备管理」信任你的 Apple 账号。";
+    }
+    return str;
+  };
+
+  if (isZh) {
+    stopEl.textContent = "停止";
+    $("tagline").textContent = "正在连接 siboot…";
+    const dt = document.querySelector(".details-toggle");
+    if (dt && dt.lastChild) dt.lastChild.textContent = "显示详细日志";
+  }
+
   const now = () => Date.now() - skew;
   const clock = (ms) => {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -241,7 +309,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
       const mark = make("span", "mark");
       mark.setAttribute("aria-hidden", "true");
       const time = make("span", "time");
-      row.append(mark, make("span", "name", name), time);
+      row.append(mark, make("span", "name", tr(name)), time);
       const line = make("p", "line");
       const progress = make("div", "progress");
       progress.hidden = true;
@@ -266,7 +334,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     if (!s) return;
     s.li.dataset.state = state;
     s.mark.textContent = state === "done" ? "✓" : "✕";
-    s.line.textContent = text ? cap(text) : "";
+    s.line.textContent = text ? cap(tr(text)) : "";
     s.time.textContent = "";
     s.progress.hidden = true;
     active = -1;
@@ -282,7 +350,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     status = title;
     s.li.dataset.state = "active";
     s.mark.textContent = "";
-    s.line.textContent = cap(title);
+    s.line.textContent = cap(tr(title));
     s.startedAt = at;
     s.time.textContent = "0:00";
     place();
@@ -291,8 +359,8 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
   function setStatus(text) {
     status = text;
     const s = steps[active];
-    if (s) s.line.textContent = cap(text);
-    else item("note", text);
+    if (s) s.line.textContent = cap(tr(text));
+    else item("note", tr(text));
   }
 
   function item(kind, text) {
@@ -367,16 +435,16 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     head.append(make("h2", "outcome-title", title));
     if (took) head.append(make("span", "outcome-took", took));
     outcomeEl.append(head);
-    for (const p of paragraphs) outcomeEl.append(make("p", null, p));
+    for (const p of paragraphs) outcomeEl.append(make("p", null, tr(p)));
     // The app it installed, or the update a stop asks for.
     for (const link of links) {
-      const a = make("a", "button primary", link.label);
+      const a = make("a", "button primary", tr(link.label));
       a.href = link.url;
       outcomeEl.append(a);
     }
     if (cause) {
       const more = make("details", "cause");
-      more.append(make("summary", null, "Details"), make("p", null, cause));
+      more.append(make("summary", null, isZh ? "查看详情" : "Details"), make("p", null, cause));
       outcomeEl.append(more);
     }
     outcomeEl.hidden = false;
@@ -386,7 +454,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
 
   function finish(e) {
     if (active >= 0) settle("done", status);
-    outcome("good", "✓ " + e.title, e.took || "", e.paragraphs || [], "");
+    outcome("good", "✓ " + tr(e.title), e.took || "", e.paragraphs || [], "");
   }
 
   function failure(e) {
@@ -394,8 +462,8 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     // it asks after (the log) comes as a new one.
     if (asking) answered(asking.id);
     pinEnd();
-    if (active >= 0) settle("failed", "stopped after " + clock(now() - steps[active].startedAt));
-    outcome("bad", "✕ Stopped", e.took || "", [e.advice], e.cause || "");
+    if (active >= 0) settle("failed", (isZh ? "已停止，耗时 " : "stopped after ") + clock(now() - steps[active].startedAt));
+    outcome("bad", isZh ? "✕ 已停止" : "✕ Stopped", e.took || "", [e.advice], e.cause || "");
   }
 
   function end() {
@@ -404,7 +472,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     pinEnd();
     stopEl.hidden = true;
     if (source) source.close();
-    banner("siboot is done. You can close this page.", "", "done");
+    banner(isZh ? "已完成，可以关闭此页面。" : "siboot is done. You can close this page.", "", "done");
   }
 
   // ---------------------------------------------------------- questions
@@ -429,13 +497,13 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     askEl.removeAttribute("aria-busy");
     askEl.dataset.kind = e.kind;
     askEl.onsubmit = (ev) => ev.preventDefault();
-    askEl.append(make("h2", "ask-title", cap(e.question)));
+    askEl.append(make("h2", "ask-title", cap(tr(e.question))));
     const actions = make("div", "actions");
     let focus = null;
 
     if (e.kind === "text" || e.kind === "secret" || e.kind === "line") {
       const field = make("label", "field");
-      if (e.label) field.append(make("span", "field-label", e.label));
+      if (e.label) field.append(make("span", "field-label", tr(e.label)));
       const input = make("input", "input");
       if (e.kind === "secret") {
         input.type = "password";
@@ -451,7 +519,7 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
       input.setAttribute("autocorrect", "off");
       input.spellcheck = false;
       input.enterKeyHint = "send";
-      input.placeholder = e.placeholder || "";
+      input.placeholder = tr(e.placeholder || "");
       field.append(input);
       askEl.append(field);
       focus = input;
@@ -460,8 +528,8 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
         if (!input.value.trim() && e.kind !== "line") return input.focus();
         send({ value: input.value });
       };
-      actions.append(button("Continue", "primary", "submit"));
-      actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
+      actions.append(button(isZh ? "继续" : "Continue", "primary", "submit"));
+      actions.append(button(isZh ? "取消" : "Cancel", "quiet", "button", () => send({ cancel: true })));
     } else if (e.kind === "code") {
       const code = make("label", "code");
       const boxes = make("span", "boxes");
@@ -494,8 +562,8 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
         ev.preventDefault();
         if (input.value.length === 6) send({ value: input.value });
       };
-      if (e.more) actions.append(button("Other ways", "secondary", "button", () => send({ more: true })));
-      actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
+      if (e.more) actions.append(button(isZh ? "其他方式" : "Other ways", "secondary", "button", () => send({ more: true })));
+      actions.append(button(isZh ? "取消" : "Cancel", "quiet", "button", () => send({ cancel: true })));
       focus = input;
     } else if (e.kind === "pairing_choice") {
       const isZh = /^zh/i.test((navigator.language || "").trim());
@@ -536,20 +604,20 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
         for (const note of e.notes) notes.append(make("li", "ready-note", note));
         askEl.append(notes);
       }
-      actions.append(button(e.button || "Start", "primary", "button", () => send({ go: true })));
-      actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
+      actions.append(button(tr(e.button || "Start"), "primary", "button", () => send({ go: true })));
+      actions.append(button(isZh ? "取消" : "Cancel", "quiet", "button", () => send({ cancel: true })));
     } else if (e.kind === "confirm") {
-      actions.append(button("Yes", e.default ? "primary" : "secondary", "button", () => send({ yes: true })));
-      actions.append(button("No", e.default ? "secondary" : "primary", "button", () => send({ yes: false })));
+      actions.append(button(isZh ? "是" : "Yes", e.default ? "primary" : "secondary", "button", () => send({ yes: true })));
+      actions.append(button(isZh ? "否" : "No", e.default ? "secondary" : "primary", "button", () => send({ yes: false })));
     } else if (e.kind === "choose") {
       const list = make("ol", "choices");
       e.options.forEach((option, i) => {
         const li = make("li");
-        li.append(button(option, "choice", "button", () => send({ index: i })));
+        li.append(button(tr(option), "choice", "button", () => send({ index: i })));
         list.append(li);
       });
       askEl.append(list);
-      actions.append(button("Back", "quiet", "button", () => send({ cancel: true })));
+      actions.append(button(isZh ? "返回" : "Back", "quiet", "button", () => send({ cancel: true })));
     }
 
     askEl.append(actions);
@@ -601,8 +669,8 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
     switch (e.t) {
       case "header":
         $("version").textContent = e.version;
-        $("tagline").textContent = e.tagline;
-        $("keep").textContent = e.note;
+        $("tagline").textContent = tr(e.tagline);
+        $("keep").textContent = tr(e.note);
         $("keep").hidden = !e.note;
         stopEl.hidden = ended;
         break;
@@ -657,18 +725,18 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
   stopEl.addEventListener("click", async () => {
     if (Date.now() - armed > 3000) {
       armed = Date.now();
-      stopEl.textContent = "Tap again to stop";
+      stopEl.textContent = isZh ? "再点一次停止" : "Tap again to stop";
       stopEl.classList.add("armed");
       setTimeout(() => {
         if (Date.now() - armed >= 3000 && !stopEl.disabled) {
-          stopEl.textContent = "Stop";
+          stopEl.textContent = isZh ? "停止" : "Stop";
           stopEl.classList.remove("armed");
         }
       }, 3100);
       return;
     }
     stopEl.disabled = true;
-    stopEl.textContent = "Stopping…";
+    stopEl.textContent = isZh ? "正在停止…" : "Stopping…";
     try {
       await fetch("stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     } catch (err) {}

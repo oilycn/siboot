@@ -335,10 +335,21 @@ fn main() -> ExitCode {
     };
     ui::init(args.verbose, args.plain || page.is_some());
     init_logging(args.verbose);
+    let target_app = if args
+        .ipa
+        .as_deref()
+        .is_some_and(|s| s.to_ascii_lowercase().contains("gnoix"))
+    {
+        "Gnoix"
+    } else {
+        "SideInstaller"
+    };
     ui::header(
         VERSION,
         if args.command == Command::DeveloperMode {
             "Shows Developer Mode, or turns it on."
+        } else if target_app == "Gnoix" {
+            "Installs / Re-signs Gnoix on this iPhone."
         } else {
             "Installs SideInstaller on this iPhone."
         },
@@ -547,7 +558,17 @@ async fn pipeline(args: &Args) -> Result<()> {
     let mut session = account::sign_in(args).await?;
     ui::done(&session.team);
 
-    ui::step(5, "Signing SideInstaller for this iPhone");
+    let target_app = if args
+        .ipa
+        .as_deref()
+        .is_some_and(|s| s.to_ascii_lowercase().contains("gnoix"))
+    {
+        "Gnoix"
+    } else {
+        "SideInstaller"
+    };
+
+    ui::step(5, &format!("Signing {target_app} for this iPhone"));
     let ipa = ipa.ok_or_else(|| Fail::new("siboot has no IPA to sign.", "step 1 got none"))?;
     let signed = sign::sign(&mut session, &ipa.path, &device).await?;
     ui::done(&match &signed.version {
@@ -561,14 +582,20 @@ async fn pipeline(args: &Args) -> Result<()> {
     ui::ok(&format!("{} installed ({})", signed.name, signed.bundle_id));
     ui::done(&format!("installed · {uploaded}"));
 
-    ui::step(7, "Handing SideInstaller the pairing");
+    let app_label = if signed.name.is_empty() { target_app } else { signed.name.as_str() };
+    ui::step(7, &format!("Handing {app_label} the pairing"));
     seed::hand_over(&mut connection, &signed.bundle_id, &pairing_path).await?;
-    ui::done("SideInstaller has the pairing");
+    ui::done(&format!("{app_label} has the pairing"));
 
-    // Its own URL scheme (ios-app/Info.plist): the page's button opens it.
-    ui::link("Open SideInstaller", "sideinstaller://");
+    let is_gnoix = app_label.to_ascii_lowercase().contains("gnoix")
+        || signed.bundle_id.to_ascii_lowercase().contains("gnoix");
+    if is_gnoix {
+        ui::link("Open Gnoix", "gnoix://");
+    } else {
+        ui::link("Open SideInstaller", "sideinstaller://");
+    }
     ui::finish(
-        "SideInstaller is installed",
+        &format!("{app_label} is installed"),
         &[
             "Open it from your Home Screen. The first time, iOS asks you to trust your Apple \
              Account: Settings › General › VPN & Device Management.",
