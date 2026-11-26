@@ -9,7 +9,7 @@
 //! development; Application Support is outside Documents, and SideInstaller
 //! only moves a pairing file out of Documents when it has none of its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::afc::AfcClient;
@@ -22,6 +22,7 @@ use crate::ui;
 
 pub const PAIRING_PATH: &str = "/Library/Application Support/rp_pairing_file.plist";
 const MERGED_PATH: &str = "/Library/Application Support/combined_pairing_file.plist";
+const SIGNER_STORAGE_DIR: &str = "/Library/Application Support/SideInstallerStorage";
 /// `Engine.importedPairingNameKey`.
 const IMPORTED_NAME_KEY: &str = "importedPairingFileName";
 /// The name SideInstaller shows the file under, as it shows "SideBySide.plist"
@@ -32,6 +33,7 @@ pub async fn hand_over(
     connection: &mut Connection,
     bundle_id: &str,
     pairing_path: &Path,
+    isideload_dir: Option<&Path>,
 ) -> Result<()> {
     ui::activity("opening SideInstaller's container");
     let pairing = std::fs::read(pairing_path).map_err(|e| {
@@ -78,7 +80,61 @@ pub async fn hand_over(
             ui::detail(&e.raw);
         }
     }
+
+    // Hand over siboot's isideload signing storage (private key + developer_session.json)
+    // into /Library/Application Support/SideInstallerStorage so Gnoix / SideInstaller
+    // reuses the exact same cloud development certificate instead of hitting Apple 7460.
+    if let Some(src_dir) = isideload_dir.filter(|p| p.is_dir()) {
+        match sync_dir(&mut afc, src_dir, SIGNER_STORAGE_DIR).await {
+            Ok(count) if count > 0 => {
+                ui::ok(&format!(
+                    "synced {count} signing key / session file(s) into {SIGNER_STORAGE_DIR}"
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                ui::detail(&format!("signing storage handover skipped: {}", e.raw));
+            }
+        }
+    }
     Ok(())
+}
+
+/// Iteratively copies files from a local directory into the app container via AFC.
+async fn sync_dir(afc: &mut AfcClient, local_root: &Path, remote_root: &str) -> Result<usize> {
+    let _ = afc.mk_dir(remote_root).await;
+    let mut stack: Vec<(PathBuf, String)> = vec![(local_root.to_path_buf(), remote_root.to_string())];
+    let mut copied = 0usize;
+
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        let entries = std::fs::read_dir(&src_dir).map_err(|e| {
+            Fail::new(
+                format!("Couldn't read {}.", src_dir.display()),
+                e.to_string(),
+            )
+        })?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let remote_path = format!("{dst_dir}/{name}");
+            if path.is_dir() {
+                let _ = afc.mk_dir(&remote_path).await;
+                stack.push((path, remote_path));
+            } else if path.is_file() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if write_verified(afc, &remote_path, &bytes).await.is_ok() {
+                        copied += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(copied)
 }
 
 /// Set `importedPairingFileName` in SideInstaller's preferences, keeping what's

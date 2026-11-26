@@ -584,7 +584,14 @@ async fn pipeline(args: &Args) -> Result<()> {
 
     let app_label = if signed.name.is_empty() { target_app } else { signed.name.as_str() };
     ui::step(7, &format!("Handing {app_label} the pairing"));
-    seed::hand_over(&mut connection, &signed.bundle_id, &pairing_path).await?;
+    let isideload_dir = args.home.join("isideload");
+    seed::hand_over(
+        &mut connection,
+        &signed.bundle_id,
+        &pairing_path,
+        Some(isideload_dir.as_path()),
+    )
+    .await?;
     ui::done(&format!("{app_label} has the pairing"));
 
     let is_gnoix = app_label.to_ascii_lowercase().contains("gnoix")
