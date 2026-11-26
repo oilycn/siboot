@@ -1062,28 +1062,34 @@ fn choose_certificates_to_revoke(certs: &Vec<DevelopmentCertificate>) -> Option<
             return choose_certificates_plain(certs);
         }
         ui::warn(
-            "This Apple Account already has as many signing certificates as Apple allows, so one \
-             must be revoked to make siboot's. Apps signed with a revoked certificate stop \
-             opening, on every device, until they're signed again. This can't be undone.",
+            "该 Apple 账号云端开发证书已达上限（因苹果不保存私钥，无法直接复用其他工具签发的证书）。\
+             请选择撤销一张旧证书以签发 siboot 证书（签发后后续运行将自动复用，不会再弹窗）。\
+             建议优先撤销标有 [推荐撤销] 的 Gnoix/siboot 旧证书。",
         );
         let mut labels: Vec<String> = certs
             .iter()
             .map(|cert| {
+                let machine = cert.machine_name.as_deref().unwrap_or("?");
+                let m_lower = machine.to_ascii_lowercase();
+                let tag = if m_lower.contains("gnoix") || m_lower.contains("siboot") {
+                    "[推荐撤销] "
+                } else {
+                    ""
+                };
                 format!(
-                    "{} · \"{}\" · {}",
+                    "{tag}{} · \"{machine}\" · {}",
                     cert.name.as_deref().unwrap_or("certificate"),
-                    cert.machine_name.as_deref().unwrap_or("?"),
                     cert.serial_number.as_deref().unwrap_or("?"),
                 )
             })
             .collect();
-        labels.push("None: stop here".into());
-        let index = ui::choose("revoke which certificate?", &labels)?;
+        labels.push("不撤销，停止运行".into());
+        let index = ui::choose("选择要撤销的旧证书", &labels)?;
         let serial = certs.get(index)?.serial_number.clone()?;
-        if !ui::confirm("revoke it? this can't be undone", false) {
+        if !ui::confirm("确认撤销该证书？（撤销后不可恢复）", false) {
             return None;
         }
-        ui::status(&format!("revoking certificate {serial}"));
+        ui::status(&format!("正在撤销证书 {serial}"));
         Some(vec![serial])
     })
 }

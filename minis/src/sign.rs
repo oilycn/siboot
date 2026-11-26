@@ -21,22 +21,41 @@ pub struct Signed {
     pub version: Option<String>,
 }
 
-pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Result<Signed> {
-    ui::status("signing; this takes a while here");
-    let first_try = session
+/// 从 Apple 9401 错误中提取被占用的 App ID；若其中包含大写字母（例如 `cn.oily.gnoix.VX8N6X9T3K`），
+/// 返回其全小写形式（`cn.oily.gnoix.vx8n6x9t3k`），以便直接复用本账号先前注册的小写 App ID 并原地覆盖安装。
+fn lowercase_fallback_bundle_id(text: &str) -> Option<String> {
+    let marker = "Identifier '";
+    let start = text.find(marker)? + marker.len();
+    let rest = &text[start..];
+    let end = rest.find('\'')?;
+    let id = &rest[..end];
+    let lower = id.to_ascii_lowercase();
+    if !lower.is_empty() && lower != id {
+        Some(lower)
+    } else {
+        None
+    }
+}
+
+async fn try_sign_with_bundle_id(
+    session: &mut Session,
+    ipa: &Path,
+    device: &DeviceInfo,
+    custom_bundle_id: Option<String>,
+) -> std::result::Result<(PathBuf, bool), String> {
+    let first = session
         .sideloader
         .sign_app(
             ipa.to_path_buf(),
-            None,
+            custom_bundle_id.clone(),
             MemoryLimit::Off,
             true,
             Some((device.name.as_str(), device.udid.as_str())),
             None,
         )
         .await;
-
-    let (app_dir, _special) = match first_try {
-        Ok(res) => res,
+    match first {
+        Ok(res) => Ok(res),
         Err(e) => {
             let text = crate::error_text::report_text(&e);
             let lower = text.to_ascii_lowercase();
@@ -44,22 +63,43 @@ pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Res
                 || lower.contains("application group")
                 || lower.contains("error 35")
             {
-                ui::warn("app group unavailable; retrying without app group");
+                ui::warn("应用组 (App Group) 不可用，正在尝试不带应用组继续签名…");
                 session
                     .sideloader
                     .sign_app(
                         ipa.to_path_buf(),
-                        None,
+                        custom_bundle_id,
                         MemoryLimit::Off,
                         false,
                         Some((device.name.as_str(), device.udid.as_str())),
                         None,
                     )
                     .await
-                    .map_err(|e2| {
-                        let text2 = crate::error_text::report_text(&e2);
-                        Fail::new(sign_advice(&text2), text2)
-                    })?
+                    .map_err(|e2| crate::error_text::report_text(&e2))
+            } else {
+                Err(text)
+            }
+        }
+    }
+}
+
+pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Result<Signed> {
+    ui::status("正在签名，请稍候…");
+    let (app_dir, _special) = match try_sign_with_bundle_id(session, ipa, device, None).await {
+        Ok(res) => res,
+        Err(text) => {
+            if text.contains("9401") {
+                if let Some(lower_id) = lowercase_fallback_bundle_id(&text) {
+                    ui::warn(&format!(
+                        "检测到云端已存在小写 App ID，自动切换为 {lower_id} 复用已有配置并原地覆盖重签…"
+                    ));
+                    match try_sign_with_bundle_id(session, ipa, device, Some(lower_id)).await {
+                        Ok(res) => res,
+                        Err(text2) => return Err(Fail::new(sign_advice(&text2), text2)),
+                    }
+                } else {
+                    return Err(Fail::new(sign_advice(&text), text));
+                }
             } else {
                 return Err(Fail::new(sign_advice(&text), text));
             }
@@ -78,21 +118,18 @@ pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Res
 /// Advice for the refusals SideInstaller's own signing explains.
 fn sign_advice(text: &str) -> String {
     if text.starts_with("device registration failed") {
-        "Apple wouldn't register this iPhone with your developer team, so it won't issue a \
-         provisioning profile."
-            .into()
+        "Apple 拒绝将本设备注册到开发者团队，因此无法签发描述文件。".into()
     } else if text.contains("7460") {
-        "Apple won't issue a signing certificate: it says one already exists (error 7460).".into()
-    } else if text.contains("9401")
-        || text
-            .to_ascii_lowercase()
-            .contains("maximum number of app ids")
+        "该账号的云端开发证书数量已达上限 (7460)，请撤销一张不再使用的旧证书后重试。".into()
+    } else if text
+        .to_ascii_lowercase()
+        .contains("maximum number of app ids")
     {
-        "This Apple Account has reached its limit of App IDs for the week. Wait for one to expire, \
-         or use another account."
-            .into()
+        "该 Apple 账号本周可注册的 App ID 数量已达上限，请等待过期或更换账号。".into()
+    } else if text.contains("9401") {
+        "App ID 已被占用或存在大小写冲突 (error 9401)，请确认该 Bundle ID 未被其他账号占用。".into()
     } else {
-        "Signing failed.".into()
+        "签名失败。".into()
     }
 }
 
