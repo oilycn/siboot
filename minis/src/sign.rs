@@ -21,33 +21,16 @@ pub struct Signed {
     pub version: Option<String>,
 }
 
-/// 从 Apple 9401 错误中提取被占用的 App ID；若其中包含大写字母（例如 `cn.oily.gnoix.VX8N6X9T3K`），
-/// 返回其全小写形式（`cn.oily.gnoix.vx8n6x9t3k`），以便直接复用本账号先前注册的小写 App ID 并原地覆盖安装。
-fn lowercase_fallback_bundle_id(text: &str) -> Option<String> {
-    let marker = "Identifier '";
-    let start = text.find(marker)? + marker.len();
-    let rest = &text[start..];
-    let end = rest.find('\'')?;
-    let id = &rest[..end];
-    let lower = id.to_ascii_lowercase();
-    if !lower.is_empty() && lower != id {
-        Some(lower)
-    } else {
-        None
-    }
-}
-
-async fn try_sign_with_bundle_id(
+async fn try_sign(
     session: &mut Session,
     ipa: &Path,
     device: &DeviceInfo,
-    custom_bundle_id: Option<String>,
-) -> std::result::Result<(PathBuf, bool), String> {
+) -> std::result::Result<PathBuf, String> {
     let first = session
         .sideloader
         .sign_app(
             ipa.to_path_buf(),
-            custom_bundle_id.clone(),
+            None,
             MemoryLimit::Off,
             true,
             Some((device.name.as_str(), device.udid.as_str())),
@@ -55,7 +38,7 @@ async fn try_sign_with_bundle_id(
         )
         .await;
     match first {
-        Ok(res) => Ok(res),
+        Ok((app_dir, _special)) => Ok(app_dir),
         Err(e) => {
             let text = crate::error_text::report_text(&e);
             let lower = text.to_ascii_lowercase();
@@ -68,13 +51,14 @@ async fn try_sign_with_bundle_id(
                     .sideloader
                     .sign_app(
                         ipa.to_path_buf(),
-                        custom_bundle_id,
+                        None,
                         MemoryLimit::Off,
                         false,
                         Some((device.name.as_str(), device.udid.as_str())),
                         None,
                     )
                     .await
+                    .map(|(app_dir, _special)| app_dir)
                     .map_err(|e2| crate::error_text::report_text(&e2))
             } else {
                 Err(text)
@@ -85,25 +69,9 @@ async fn try_sign_with_bundle_id(
 
 pub async fn sign(session: &mut Session, ipa: &Path, device: &DeviceInfo) -> Result<Signed> {
     ui::status("正在签名，请稍候…");
-    let (app_dir, _special) = match try_sign_with_bundle_id(session, ipa, device, None).await {
-        Ok(res) => res,
-        Err(text) => {
-            if text.contains("9401") {
-                if let Some(lower_id) = lowercase_fallback_bundle_id(&text) {
-                    ui::warn(&format!(
-                        "检测到云端已存在小写 App ID，自动切换为 {lower_id} 复用已有配置并原地覆盖重签…"
-                    ));
-                    match try_sign_with_bundle_id(session, ipa, device, Some(lower_id)).await {
-                        Ok(res) => res,
-                        Err(text2) => return Err(Fail::new(sign_advice(&text2), text2)),
-                    }
-                } else {
-                    return Err(Fail::new(sign_advice(&text), text));
-                }
-            } else {
-                return Err(Fail::new(sign_advice(&text), text));
-            }
-        }
+    let app_dir = match try_sign(session, ipa, device).await {
+        Ok(dir) => dir,
+        Err(text) => return Err(Fail::new(sign_advice(&text), text)),
     };
     let (bundle_id, name, version) = bundle_info(&app_dir)?;
     ui::ok(&format!("signed {name} as {bundle_id}"));
@@ -127,7 +95,7 @@ fn sign_advice(text: &str) -> String {
     {
         "该 Apple 账号本周可注册的 App ID 数量已达上限，请等待过期或更换账号。".into()
     } else if text.contains("9401") {
-        "App ID 已被占用或存在大小写冲突 (error 9401)，请确认该 Bundle ID 未被其他账号占用。".into()
+        "App ID 已被占用或与该账号之前注册的小写 App ID 冲突 (error 9401)。若为付费账号可去苹果后台删除旧小写 App ID；若为免费账号请等待旧 App ID 7 天过期或更换 Apple ID。".into()
     } else {
         "签名失败。".into()
     }
