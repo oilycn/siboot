@@ -92,6 +92,8 @@ pub async fn sign_in(args: &Args) -> Result<Session> {
             e.to_string(),
         )
     })?;
+    // 优先从 Open Minis 挂载的 Gnoix 文件夹 (SibootRescue/) 自动导入开发者会话与账号
+    let rescued_apple_id = adopt_mounted_rescue_sessions(&args.home, &storage);
     // Before this sign-in saves a token, so an account new here is said to
     // be kept.
     start_list(&args.home, &storage);
@@ -99,6 +101,7 @@ pub async fn sign_in(args: &Args) -> Result<Session> {
         .apple_id
         .clone()
         .or_else(|| std::env::var("SIBOOT_APPLE_ID").ok())
+        .or(rescued_apple_id)
     {
         Some(id) => id,
         None => which_account(&args.home, &storage).unwrap_or_default(),
@@ -257,6 +260,84 @@ fn ask_password() -> Result<String> {
         return Err(Fail::by_user("No password given."));
     }
     Ok(password)
+}
+
+// ------------------------------------------------- mounted Gnoix rescue import
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    let Ok(entries) = std::fs::read_dir(src) else { return };
+    let _ = std::fs::create_dir_all(dst);
+    for entry in entries.flatten() {
+        let sp = entry.path();
+        let dp = dst.join(entry.file_name());
+        if sp.is_dir() {
+            copy_dir_recursive(&sp, &dp);
+        } else if sp.is_file() {
+            let _ = std::fs::copy(&sp, &dp);
+        }
+    }
+}
+
+/// 扫描 Open Minis 挂载目录（如 `/var/minis/mounts/Gnoix/SibootRescue`），
+/// 自动导入 Gnoix 同步出来的 isideload 开发者会话与 Apple ID，实现免登录覆盖重签。
+fn adopt_mounted_rescue_sessions(home: &Path, storage: &Path) -> Option<String> {
+    let mut rescue_dirs: Vec<PathBuf> = Vec::new();
+    for root in ["/var/minis/mounts", "/mnt"] {
+        let root_path = PathBuf::from(root);
+        if !root_path.is_dir() {
+            continue;
+        }
+        let direct = root_path.join("SibootRescue");
+        if direct.is_dir() {
+            rescue_dirs.push(direct);
+        }
+        if let Ok(entries) = std::fs::read_dir(&root_path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let candidate = p.join("SibootRescue");
+                    if candidate.is_dir() {
+                        rescue_dirs.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut picked_email: Option<String> = None;
+    for rescue in rescue_dirs {
+        let src_isideload = rescue.join("isideload");
+        if src_isideload.is_dir() {
+            copy_dir_recursive(&src_isideload, storage);
+        }
+        let src_ani = rescue.join("anisette-server");
+        if src_ani.is_file() {
+            let dst_ani = home.join("anisette-server");
+            if !dst_ani.is_file() {
+                let _ = std::fs::copy(&src_ani, &dst_ani);
+            }
+        }
+        let src_accounts = rescue.join("apple-accounts");
+        if let Ok(text) = std::fs::read_to_string(&src_accounts) {
+            for line in text.lines() {
+                let email = line.trim().to_lowercase();
+                if email.contains('@') && !email.chars().any(char::is_whitespace) {
+                    let _ = saved::remember(home, &email);
+                    if picked_email.is_none() {
+                        picked_email = Some(email);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(ref email) = picked_email {
+        if matches!(saved_token(storage, email, unix_now()), Saved::Usable(_)) {
+            ui::ok(&format!("已从挂载的 Gnoix 目录自动载入账号 {email}，尝试免登录重签"));
+            return Some(email.clone());
+        }
+    }
+    None
 }
 
 // ------------------------------------------------- remembered Apple Accounts
