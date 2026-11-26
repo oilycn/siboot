@@ -498,8 +498,11 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
       actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
       focus = input;
     } else if (e.kind === "pairing_choice") {
+      const isZh = /^zh/i.test((navigator.language || "").trim());
       const notes = make("ul", "ready-notes");
-      notes.append(make("li", "ready-note", "如已在 Open Minis 挂载配对文件目录（/var/minis/mounts），请直接点击「从挂载文件夹获取」跳过配对；也可从「文件」选择导入，或点击「开始在线配对」。"));
+      notes.append(make("li", "ready-note", isZh
+        ? "如已在 Open Minis 挂载 Gnoix 或配对文件目录（/var/minis/mounts），请直接点击「从挂载文件夹获取」跳过配对；也可从「文件」选择导入，或点击「开始在线配对」。"
+        : "If you mounted Gnoix or a pairing folder in Open Minis (/var/minis/mounts), tap Load from mounted folder to skip pairing; or import from Files / pair online."));
       askEl.append(notes);
       const fileInput = make("input");
       fileInput.type = "file";
@@ -518,12 +521,12 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
         reader.readAsDataURL(file);
       });
       askEl.append(fileInput);
-      actions.append(button("从挂载文件夹获取", "primary", "button", () => send({ mounts: true })));
-      actions.append(button("从文件导入配对文件", "secondary", "button", () => fileInput.click()));
+      actions.append(button(isZh ? "从挂载文件夹获取" : "Load from mounted folder", "primary", "button", () => send({ mounts: true })));
+      actions.append(button(isZh ? "从文件导入配对文件" : "Import pairing file", "secondary", "button", () => fileInput.click()));
       if (e.can_pair) {
-        actions.append(button("开始在线配对", "secondary", "button", () => send({ pair: true })));
+        actions.append(button(isZh ? "开始在线配对" : "Pair this iPhone", "secondary", "button", () => send({ pair: true })));
       }
-      actions.append(button("取消", "quiet", "button", () => send({ cancel: true })));
+      actions.append(button(isZh ? "取消" : "Cancel", "quiet", "button", () => send({ cancel: true })));
     } else if (e.kind === "ready") {
       const list = make("ol", "ready-steps");
       for (const step of e.steps || []) list.append(make("li", "ready-step", step));
