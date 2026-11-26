@@ -66,8 +66,10 @@ pub async fn run(args: &Args) -> Result<Checked> {
     let in_minis = crate::web::available() || std::env::var_os("SIBOOT_MINIS_BIN").is_some();
     if in_minis {
         ui::activity("checking this Open Minis");
-        check_minis(&Bridge::from_env()).await?;
-        ui::ok("this Open Minis is 1.16 or later");
+        match check_minis(&Bridge::from_env()).await {
+            Ok(()) => ui::ok("this Open Minis is 1.16 or later"),
+            Err(_) => ui::warn("Open Minis is older than 1.16 — online pairing is unavailable, but you can still use an existing or mounted pairing file."),
+        }
     }
     // The tunnel stays on this iPhone; sign-in and the download don't.
     let online = args.command == Command::All || args.command == Command::Check;

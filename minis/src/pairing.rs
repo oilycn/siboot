@@ -96,10 +96,133 @@ pub const UPDATE_OR_ROOTSHELL: &str = "Update Open Minis from the App Store (1.1
 pub enum Source {
     /// The file saved on an earlier run.
     Saved,
+    /// An existing pairing file mounted in the filesystem or imported from Files.
+    Imported,
     /// siboot-pair's offer in rootshell.
     Rootshell,
     /// A new pairing, made here.
     Minis,
+}
+
+/// Candidate pairing files in mounted / local directories (Open Minis `/mnt/*`,
+/// `~`, `~/.siboot`, current working directory), skipping `already_tried`.
+fn mounted_pairing_candidates(args: &Args, already_tried: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    dirs.push(args.home.clone());
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd);
+    }
+    let mnt = PathBuf::from("/mnt");
+    if mnt.is_dir() {
+        dirs.push(mnt.clone());
+        if let Ok(entries) = std::fs::read_dir(&mnt) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                }
+            }
+        }
+    }
+
+    let preferred_names = [
+        "rp_pairing_file.plist",
+        "combined_pairing_file.plist",
+        "siboot.plist",
+        "SideBySide.plist",
+        "pairingFile.plist",
+    ];
+    let mut out: Vec<PathBuf> = Vec::new();
+    let canonical_skip = std::fs::canonicalize(already_tried).ok();
+
+    let mut push_if_new = |p: PathBuf| {
+        if !p.is_file() {
+            return;
+        }
+        let Ok(meta) = std::fs::metadata(&p) else { return };
+        if meta.len() == 0 || meta.len() > MAX_FILE as u64 {
+            return;
+        }
+        let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if canonical_skip.as_ref().is_some_and(|s| s == &canon) {
+            return;
+        }
+        if !out.iter().any(|e| std::fs::canonicalize(e).unwrap_or_else(|_| e.clone()) == canon) {
+            out.push(p);
+        }
+    };
+
+    for dir in &dirs {
+        for name in preferred_names {
+            push_if_new(dir.join(name));
+        }
+    }
+    for dir in &dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            if ext == "plist" || ext == "mobiledevicepairing" {
+                push_if_new(p);
+            }
+        }
+    }
+    out
+}
+
+async fn try_mounted_pairing(args: &Args, dest: &Path) -> Option<PathBuf> {
+    let candidates = mounted_pairing_candidates(args, dest);
+    for candidate in candidates {
+        if RpPairingFile::read_from_file(&candidate).await.is_err() {
+            continue;
+        }
+        ui::activity(&format!("trying mounted pairing file {}", candidate.display()));
+        if tunnel::verify(args.device, &candidate).await.is_ok() {
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::copy(&candidate, dest).is_ok() {
+                ui::ok(&format!("this iPhone accepts mounted pairing file {}", candidate.display()));
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+async fn verify_and_save_imported(
+    args: &Args,
+    dest: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> std::result::Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = args.home.join(".imported_pairing_tmp.plist");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("Couldn't save {name}: {e}"))?;
+    let parse_res = RpPairingFile::read_from_file(&tmp).await;
+    if let Err(e) = parse_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "{name} is not a valid iOS 27 RemotePairing file (rp_pairing_file.plist / combined_pairing_file.plist): {}",
+            chain(&e)
+        ));
+    }
+    ui::activity(&format!("checking {name} with this iPhone"));
+    if let Err(f) = tunnel::verify(args.device, &tmp).await {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("This iPhone doesn't accept {name}: {}", f.advice));
+    }
+    std::fs::rename(&tmp, dest)
+        .or_else(|_| std::fs::copy(&tmp, dest).map(|_| ()))
+        .map_err(|e| format!("Couldn't store {name} at {}: {e}", dest.display()))?;
+    let _ = std::fs::remove_file(&tmp);
+    ui::ok(&format!("this iPhone accepts imported pairing file {name}"));
+    Ok(())
 }
 
 pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
@@ -112,11 +235,16 @@ pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
                 return Ok(Source::Saved);
             }
             Err(f) => {
-                ui::note("This iPhone doesn't accept the saved pairing file, so siboot pairs again.");
+                ui::note("This iPhone doesn't accept the saved pairing file, looking for another pairing file or pairing again.");
                 ui::detail(&f.raw);
                 saved_refused = Some(f);
             }
         }
+    }
+
+    // 自动探测已挂载或内置在目录中的配对文件，匹配成功直接跳过配对
+    if try_mounted_pairing(args, path).await.is_some() {
+        return Ok(Source::Imported);
     }
 
     let bridge = Bridge::from_env();
@@ -125,9 +253,9 @@ pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
 
     let offer = SocketAddr::from(([127, 0, 0, 1], HANDOFF_PORT));
     let hint = if here.is_ok() {
-        "type the transfer code it shows, or Cancel to pair here in Minis instead"
+        "type the transfer code it shows, or Cancel to import a pairing file / pair here in Minis"
     } else {
-        "type the transfer code it shows"
+        "type the transfer code it shows, or Cancel to import a pairing file"
     };
     let ask = || {
         ui::ask_code(
@@ -144,10 +272,25 @@ pub async fn ensure(args: &Args, path: &Path) -> Result<Source> {
             ui::ok("this iPhone accepts the pairing file from rootshell");
             return Ok(Source::Rootshell);
         }
-        Taken::Cancelled if here.is_err() => {
-            return Err(Fail::by_user("Stopped at the transfer code."))
-        }
         Taken::Cancelled | Taken::NotOffered => {}
+    }
+
+    // 允许用户跳过配对，直接通过文件选择器或路径导入已有配对文件
+    if ui::interactive() {
+        loop {
+            match ui::ask_pairing_choice(here.is_ok()) {
+                crate::web::PairingChoice::File { name, bytes } => {
+                    match verify_and_save_imported(args, path, &name, &bytes).await {
+                        Ok(()) => return Ok(Source::Imported),
+                        Err(msg) => ui::warn(&msg),
+                    }
+                }
+                crate::web::PairingChoice::PairHere => break,
+                crate::web::PairingChoice::Cancel => {
+                    return Err(Fail::by_user("Stopped before pairing."));
+                }
+            }
+        }
     }
 
     let notify = match here {

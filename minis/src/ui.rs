@@ -847,6 +847,57 @@ fn confirm_prompt(question: &str, default: bool) -> bool {
 /// `button` to start. True to go ahead, false to stop (Cancel, Esc, No). The
 /// page shows it all on one card; the live screen prints it and asks yes or
 /// no; plain output prints it and goes ahead, as there's nothing to wait for.
+pub fn ask_pairing_choice(can_pair: bool) -> web::PairingChoice {
+    if let Some(page) = web::page() {
+        let choice = page.pairing_choice(can_pair);
+        let label = match &choice {
+            web::PairingChoice::PairHere => "Pair this iPhone",
+            web::PairingChoice::File { .. } => "Import pairing file",
+            web::PairingChoice::Cancel => "Cancel",
+        };
+        record_answer("Pairing file", Some(label));
+        return choice;
+    }
+    if !interactive() {
+        return if can_pair { web::PairingChoice::PairHere } else { web::PairingChoice::Cancel };
+    }
+    let prompt = if can_pair {
+        "Path to existing pairing file (or press Enter to pair this iPhone): "
+    } else {
+        "Path to existing pairing file (or Ctrl-C to stop): "
+    };
+    match ask(prompt) {
+        None => web::PairingChoice::Cancel,
+        Some(line) if line.trim().is_empty() => {
+            if can_pair { web::PairingChoice::PairHere } else { web::PairingChoice::Cancel }
+        }
+        Some(line) => {
+            let trimmed = line.trim().trim_matches('"').trim_matches('\'');
+            let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(rest))
+                    .unwrap_or_else(|| std::path::PathBuf::from(trimmed))
+            } else {
+                std::path::PathBuf::from(trimmed)
+            };
+            match std::fs::read(&expanded) {
+                Ok(bytes) => {
+                    let name = expanded
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("pairing.plist")
+                        .to_string();
+                    web::PairingChoice::File { name, bytes }
+                }
+                Err(e) => {
+                    warn(&format!("Couldn't read {}: {e}", expanded.display()));
+                    web::PairingChoice::Cancel
+                }
+            }
+        }
+    }
+}
+
 pub fn get_ready(title: &str, steps: &[&str], notes: &[&str], button: &str) -> bool {
     record(&format!("      {title}:"));
     for (n, step) in steps.iter().enumerate() {

@@ -517,6 +517,7 @@ async fn pipeline(args: &Args) -> Result<()> {
     let source = pairing::ensure(args, &pairing_path).await.map_err(note)?;
     ui::done(match source {
         pairing::Source::Saved => "the saved pairing still works",
+        pairing::Source::Imported => "using mounted/imported pairing file",
         pairing::Source::Rootshell => "taken from rootshell",
         pairing::Source::Minis => "paired here in Minis",
     });

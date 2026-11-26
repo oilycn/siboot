@@ -497,6 +497,32 @@ footer{display:flex; align-items:center; justify-content:space-between; gap:12px
       if (e.more) actions.append(button("Other ways", "secondary", "button", () => send({ more: true })));
       actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
       focus = input;
+    } else if (e.kind === "pairing_choice") {
+      const notes = make("ul", "ready-notes");
+      notes.append(make("li", "ready-note", "You can skip pairing by importing an existing RemotePairing file (rp_pairing_file.plist / combined_pairing_file.plist) from Files."));
+      askEl.append(notes);
+      const fileInput = make("input");
+      fileInput.type = "file";
+      fileInput.accept = ".plist,.mobiledevicepairing,*/*";
+      fileInput.hidden = true;
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = String(reader.result || "");
+          const idx = res.indexOf(",");
+          const b64 = idx >= 0 ? res.slice(idx + 1) : res;
+          send({ file_name: file.name || "pairing.plist", file_b64: b64 });
+        };
+        reader.readAsDataURL(file);
+      });
+      askEl.append(fileInput);
+      actions.append(button("Import pairing file", "primary", "button", () => fileInput.click()));
+      if (e.can_pair) {
+        actions.append(button("Pair this iPhone", "secondary", "button", () => send({ pair: true })));
+      }
+      actions.append(button("Cancel", "quiet", "button", () => send({ cancel: true })));
     } else if (e.kind === "ready") {
       const list = make("ol", "ready-steps");
       for (const step of e.steps || []) list.append(make("li", "ready-step", step));

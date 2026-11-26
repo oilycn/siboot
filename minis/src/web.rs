@@ -42,9 +42,9 @@ const PAGE: &str = include_str!("web.html");
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
                    connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; \
                    frame-ancestors 'none'";
-/// A request's line and headers are never longer, nor a POST's body.
+/// A request's line and headers are never longer, nor a POST's body (allows uploading a pairing file).
 const MAX_HEAD: usize = 8 * 1024;
-const MAX_BODY: usize = 4 * 1024;
+const MAX_BODY: usize = 128 * 1024;
 /// Connections at once. The page keeps one open and makes one for each
 /// answer; a reload or two more is plenty.
 const MAX_CONNECTIONS: usize = 16;
@@ -194,6 +194,14 @@ pub enum Code {
     Digits(String),
     /// Other ways to get the code.
     More,
+    Cancel,
+}
+
+/// How the user chooses to supply a pairing file when none is saved yet.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PairingChoice {
+    PairHere,
+    File { name: String, bytes: Vec<u8> },
     Cancel,
 }
 
@@ -368,6 +376,34 @@ impl Server {
         }
     }
 
+    /// Ask whether to import an existing pairing file or pair this iPhone now.
+    pub fn pairing_choice(&self, can_pair: bool) -> PairingChoice {
+        loop {
+            let answer = self.ask(json!({
+                "kind": "pairing_choice",
+                "question": "Use an existing pairing file, or pair this iPhone",
+                "can_pair": can_pair,
+            }));
+            if cancelled(&answer) {
+                return PairingChoice::Cancel;
+            }
+            if can_pair && answer["pair"] == json!(true) {
+                return PairingChoice::PairHere;
+            }
+            if let Some(b64) = answer["file_b64"].as_str() {
+                if let Some(bytes) = decode_base64(b64) {
+                    if !bytes.is_empty() {
+                        let name = answer["file_name"]
+                            .as_str()
+                            .unwrap_or("pairing_file.plist")
+                            .to_string();
+                        return PairingChoice::File { name, bytes };
+                    }
+                }
+            }
+        }
+    }
+
     /// A line as plain output asks for one: anything, even nothing.
     pub fn line(&self, prompt: &str) -> Option<String> {
         let question = prompt.trim().trim_end_matches(':');
@@ -407,6 +443,30 @@ impl Server {
 
 fn cancelled(answer: &Value) -> bool {
     answer["cancel"] == json!(true)
+}
+
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u8 = 0;
+    for b in input.bytes() {
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\r' | b'\n' | b' ' | b'\t' => continue,
+            _ => return None,
+        };
+        buf = (buf << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
 }
 
 impl Shared {
